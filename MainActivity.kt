@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,42 +24,55 @@ import androidx.compose.ui.platform.LocalContext
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
-
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        lateinit var instance: MainActivity
+    }
+    private lateinit var client: HttpClient
+    var myId: String = "null"
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            ClientUI()
+        instance = this // Сохраняем ссылку на текущий экземпляр
+        client = HttpClient(CIO) {
+            install(WebSockets)
         }
+        setContent {
+            ClientUI(client)
+        }
+
         checkAccessibilityServiceEnabled(this)
+
+    }
+    fun sendResultToServerAfterGestures(result:String){
+        CoroutineScope(Dispatchers.Main).launch {
+            WebSocketUtils.sendResultsToServer(client,
+                SharedPreferencesHelper.readFromSP("Server_IP", instance),
+                SharedPreferencesHelper.readFromSP("Server_Port", instance),
+                result
+            )
+        }
+
     }
 }
 
 @Composable
-fun ClientUI() {
+fun ClientUI(client: HttpClient) {
     val mContext = LocalContext.current
     val isChromeOpened = remember { mutableStateOf(false) }
-    val client = remember { HttpClient(CIO) { install(WebSockets) } }
     val scope = rememberCoroutineScope()
     var serverIp by remember { mutableStateOf(SharedPreferencesHelper.readFromSP("Server_IP",mContext)) }
     var serverPort by remember { mutableStateOf(SharedPreferencesHelper.readFromSP("Server_Port",mContext)) }
     var isConnected by remember { mutableStateOf(false) }
     var isRunning by remember { mutableStateOf(false) }
     var showConfig by remember { mutableStateOf(false) }
-    val accessibilityServiceHelper =
-        AccessibilityServiceHelper().apply {
-            setSendResultCallback { callback ->
-                scope.launch {
-                    WebSocketUtils.sendResultsToServer(client,serverIp,serverPort,callback, this@apply,mContext)
 
 
-                }
-            }
-        }
 
 
     Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -78,7 +92,6 @@ fun ClientUI() {
             )
             Button(onClick = {
                 showConfig = !showConfig
-                // Сохранить IP и порт
                 SharedPreferencesHelper.writeToSP(serverIp,"Server_IP",mContext)
                 SharedPreferencesHelper.writeToSP(serverPort,"Server_Port", mContext)
             }) {
@@ -87,21 +100,18 @@ fun ClientUI() {
         }
         Row {
             Button(onClick = {
-                var job: Job? = null
                 if(!isConnected){
-                    job = scope.launch {
-                        WebSocketUtils.sendResultsToServer(
-                            client,
-                            serverIp,
-                            serverPort,
-                            "conect",
-                            accessibilityServiceHelper,
-                            mContext
-                        )
-
+                    scope.launch {
+                        WebSocketUtils.sendResultsToServer(client,serverIp,serverPort,"firstcConnect,"+MainActivity.instance.myId)
                     }
-                }else{
-                    job?.cancel()
+                }else if(!isRunning){
+                    scope.launch {
+                        WebSocketUtils.sendResultsToServer(client, serverIp,serverPort,"pause,"+MainActivity.instance.myId)
+                        WebSocketUtils.sendResultsToServer(client,serverIp,serverPort,"disconnect,"+MainActivity.instance.myId)
+                        MainActivity.instance.myId = "null"
+                        isRunning = false
+                    }
+
                 }
                 isConnected = !isConnected
             }) {
@@ -113,13 +123,13 @@ fun ClientUI() {
                 isChromeOpened.value = true
                 scope.launch {
                     openChrome(mContext,"https://www.bing.com/search?FORM=U523DF&PC=U536&q=%D0%B6%D0%B8%D0%B7%D0%BD%D1%8C+%D0%BF%D1%80%D0%B5%D1%80%D0%B0%D1%81%D0%BD%D0%B0")
-                    WebSocketUtils.sendResultsToServer(client,serverIp,serverPort,"start",accessibilityServiceHelper,mContext)
+                    WebSocketUtils.sendResultsToServer(client,serverIp,serverPort,"start,"+MainActivity.instance.myId)
                 }
 
 
             }else{
                 scope.launch {
-                    WebSocketUtils.sendResultsToServer(client, serverIp,serverPort,"pause",accessibilityServiceHelper,mContext)
+                    WebSocketUtils.sendResultsToServer(client, serverIp,serverPort,"pause,"+MainActivity.instance.myId)
                 }
             }
             isRunning = !isRunning
@@ -134,7 +144,13 @@ fun openChrome(context: Context, url: String) {
     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
         setPackage("com.android.chrome")
     }
-    context.startActivity(intent)
+    try {
+        context.startActivity(intent)
+    }catch (e:Exception){
+        e.printStackTrace()
+        Log.d("open chrome", "error")
+    }
+
 }
 
 private fun checkAccessibilityServiceEnabled(mContext: Context): Boolean {
